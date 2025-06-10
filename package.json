@@ -1,0 +1,31 @@
+{
+  "name": "figma-to-react",
+  "version": "1.0.0",
+  "description": "CLI tool to extract Figma design and generate React (MUI/Tailwind) components using OpenAI",
+  "main": "dist/figma-to-react.js",
+  "bin": {
+    "figma-to-react": "./dist/figma-to-react.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/figma-to-react.js",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@mui/material": "^7.1.1",
+    "axios": "^1.6.7",
+    "dotenv": "^16.4.5",
+    "inquirer": "^9.2.16",
+    "openai": "^4.50.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3"
+  }
+}
