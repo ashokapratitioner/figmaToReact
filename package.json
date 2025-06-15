@@ -13,8 +13,10 @@
     "dev": "tsc -w"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.54.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
+    "@mui/icons-material": "^7.1.1",
     "@mui/material": "^7.1.1",
     "axios": "^1.6.7",
     "dotenv": "^16.4.5",
