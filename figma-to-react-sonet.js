@@ -197,6 +197,11 @@ function extractStylesForAI(node, level = 0) {
   let styleInfo = "";
   const indent = "  ".repeat(level);
   
+  // Extract text content EXACTLY as in Figma
+  if (node.characters) {
+    styleInfo += `${indent}// TEXT: "${node.characters}"\n`;
+  }
+  
   // Extract visual properties for AI context
   if (node.fills && node.fills.length > 0) {
     const fill = node.fills[0];
@@ -216,15 +221,35 @@ function extractStylesForAI(node, level = 0) {
     if (node.style.textAlignHorizontal) styleInfo += `${indent}// Text Align: ${node.style.textAlignHorizontal}\n`;
   }
   
-  // Extract dimensions for AI context
+  // Extract layout properties for EXACT positioning
   if (node.absoluteBoundingBox) {
     const box = node.absoluteBoundingBox;
+    styleInfo += `${indent}// Position: x=${box.x}px, y=${box.y}px\n`;
     styleInfo += `${indent}// Dimensions: ${box.width}px × ${box.height}px\n`;
   }
   
+  // Extract spacing and layout constraints
+  if (node.constraints) {
+    styleInfo += `${indent}// Constraints: ${JSON.stringify(node.constraints)}\n`;
+  }
+  
+  // Extract padding and margins if available
+  if (node.paddingLeft || node.paddingRight || node.paddingTop || node.paddingBottom) {
+    styleInfo += `${indent}// Padding: ${node.paddingTop || 0}px ${node.paddingRight || 0}px ${node.paddingBottom || 0}px ${node.paddingLeft || 0}px\n`;
+  }
+  
   // Extract corner radius for AI context
-  if (node.cornerRadius) {
+  if (node.cornerRadius !== undefined) {
     styleInfo += `${indent}// Border Radius: ${node.cornerRadius}px\n`;
+  }
+  
+  // Extract layout mode for flex/grid layouts
+  if (node.layoutMode) {
+    styleInfo += `${indent}// Layout Mode: ${node.layoutMode}\n`;
+    if (node.itemSpacing) styleInfo += `${indent}// Item Spacing: ${node.itemSpacing}px\n`;
+    if (node.paddingLeft !== undefined) styleInfo += `${indent}// Padding: ${node.paddingTop}px ${node.paddingRight}px ${node.paddingBottom}px ${node.paddingLeft}px\n`;
+    if (node.primaryAxisAlignItems) styleInfo += `${indent}// Main Axis: ${node.primaryAxisAlignItems}\n`;
+    if (node.counterAxisAlignItems) styleInfo += `${indent}// Cross Axis: ${node.counterAxisAlignItems}\n`;
   }
   
   return styleInfo;
@@ -334,7 +359,7 @@ async function generateWithAI(model, client, prompts, outputDir, componentName, 
 
   const systemMsg = { role: "system", content: systemPrompts };
 
-  // Create image imports context for AI
+    // Create image imports context for AI
   const imageContext = imageImports.length > 0 
     ? `\n\nAvailable images in assets folder:\n${imageImports.map(img => 
         `// ${img.nodeName} -> import ${img.importName} from '${img.relativePath}';`
@@ -377,7 +402,7 @@ Follow all custom hook generation principles from the system prompt: type-safe, 
         
 CRITICAL: Output ONLY the raw TypeScript/React code. No markdown fences, no comments, no explanations.
 File path: components/${sanitizedName}/${sanitizedName}.tsx
-Import types from './types' and hook from './use${sanitizedName}'.
+Import types from './types/types' and hook from './hooks/use${sanitizedName}'.
 Component name: ${sanitizedName}
 Use ${prompts.framework} EXCLUSIVELY for styling - no CSS modules or external stylesheets.
 ${imageImports.length > 0 ? '\nImport and use the available images in your component JSX where they make sense.' : ''}`,
