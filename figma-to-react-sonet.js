@@ -51,10 +51,138 @@ async function fetchFigmaFile(fileId) {
   }
 }
 
+// NEW: Efficient image extraction functions
+async function extractAndSaveImages(fileId, nodes, targetPath, componentName) {
+  const imageNodes = findImageNodes(nodes);
+  if (imageNodes.length === 0) return [];
+
+  console.log(`🖼️  Processing ${imageNodes.length} images...`);
+  
+  try {
+    // Get image URLs from Figma API
+    const nodeIds = imageNodes.map(node => node.id).join(',');
+    const response = await axios.get(
+      `https://api.figma.com/v1/images/${fileId}?ids=${nodeIds}&format=png&scale=2`,
+      { 
+        headers: { "X-Figma-Token": FIGMA_API_KEY },
+        timeout: 30000 // 30 second timeout
+      }
+    );
+
+    const imageUrls = response.data.images;
+    const imageImports = [];
+
+    // Create assets directory
+    const assetsDir = path.join(targetPath, 'assets');
+    await fs.promises.mkdir(assetsDir, { recursive: true });
+
+    // Process images one by one to avoid memory overload
+    for (const [nodeId, imageUrl] of Object.entries(imageUrls)) {
+      if (!imageUrl) continue;
+
+      try {
+        const node = imageNodes.find(n => n.id === nodeId);
+        const imageName = sanitizeComponentName(node.name || `image_${Date.now()}`);
+        const fileName = `${imageName}.png`;
+        const filePath = path.join(assetsDir, fileName);
+
+        // Download image with streaming to handle large files efficiently
+        const imageResponse = await axios.get(imageUrl, { 
+          responseType: 'stream',
+          timeout: 15000 // 15 second timeout per image
+        });
+
+        // Create write stream and pipe data
+        const writeStream = fs.createWriteStream(filePath);
+        imageResponse.data.pipe(writeStream);
+
+        // Wait for write completion
+        await new Promise((resolve, reject) => {
+          writeStream.on('finish', resolve);
+          writeStream.on('error', reject);
+        });
+
+        // Add to imports array
+        imageImports.push({
+          importName: imageName,
+          fileName: fileName,
+          relativePath: `./assets/${fileName}`,
+          nodeId: nodeId,
+          nodeName: node.name || 'Unnamed'
+        });
+
+        console.log(`  ✓ Saved: ${fileName}`);
+
+        // Force garbage collection hint (if available)
+        if (global.gc) {
+          global.gc();
+        }
+
+      } catch (imageError) {
+        console.warn(`  ⚠️  Failed to download image for node ${nodeId}: ${imageError.message}`);
+        continue; // Skip this image but continue with others
+      }
+    }
+
+    console.log(`📸 Successfully saved ${imageImports.length} images`);
+    return imageImports;
+
+  } catch (error) {
+    console.warn(`Failed to extract images: ${error.message}`);
+    return [];
+  }
+}
+
+function findImageNodes(node, imageNodes = []) {
+  if (!node) return imageNodes;
+
+  // Check if node has image fills
+  if (node.fills && Array.isArray(node.fills)) {
+    const hasImageFill = node.fills.some(fill => fill.type === 'IMAGE');
+    if (hasImageFill) {
+      imageNodes.push(node);
+    }
+  }
+
+  // Check for nodes that likely contain images
+  if (node.type === 'RECTANGLE' || node.type === 'ELLIPSE') {
+    const nodeName = node.name.toLowerCase();
+    if (nodeName.includes('image') || nodeName.includes('img') || 
+        nodeName.includes('photo') || nodeName.includes('picture') ||
+        nodeName.includes('icon') || nodeName.includes('logo')) {
+      imageNodes.push(node);
+    }
+  }
+
+  // Check for component instances that might be images
+  if (node.type === 'INSTANCE' || node.type === 'COMPONENT') {
+    const nodeName = node.name.toLowerCase();
+    if (nodeName.includes('image') || nodeName.includes('icon') || nodeName.includes('logo')) {
+      imageNodes.push(node);
+    }
+  }
+
+  // Recursively check children
+  if (node.children && Array.isArray(node.children)) {
+    node.children.forEach(child => {
+      findImageNodes(child, imageNodes);
+    });
+  }
+
+  return imageNodes;
+}
+
 function extractNodeSummary(node, level = 0) {
   if (!node) return "";
   
   let summary = `${"  ".repeat(level)}- ${node.name || 'Unnamed'} (${node.type || 'Unknown'})\n`;
+  
+  // Add style information for AI context
+  const styleInfo = extractStylesForAI(node, level + 1);
+  if (styleInfo) {
+    summary += styleInfo;
+  }
+  
   if (node.children && Array.isArray(node.children)) {
     node.children.forEach((child) => {
       summary += extractNodeSummary(child, level + 1);
@@ -63,76 +191,62 @@ function extractNodeSummary(node, level = 0) {
   return summary;
 }
 
-function extractStyles(node, className = "") {
+function extractStylesForAI(node, level = 0) {
   if (!node) return "";
   
-  let styles = "";
+  let styleInfo = "";
+  const indent = "  ".repeat(level);
   
-  // Extract actual Figma properties
+  // Extract visual properties for AI context
   if (node.fills && node.fills.length > 0) {
     const fill = node.fills[0];
     if (fill.type === 'SOLID' && fill.color) {
       const color = fill.color;
       const opacity = fill.opacity || 1;
       const rgb = `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${opacity})`;
-      
-      styles += `${className ? `.${className}` : ""} {\n`;
-      styles += `  background-color: ${rgb};\n`;
+      styleInfo += `${indent}// Background: ${rgb}\n`;
     }
   }
   
-  // Extract text styles
+  // Extract text styles for AI context
   if (node.style) {
-    styles += `${className ? `.${className}` : ""} {\n`;
-    if (node.style.fontFamily) styles += `  font-family: "${node.style.fontFamily}";\n`;
-    if (node.style.fontSize) styles += `  font-size: ${node.style.fontSize}px;\n`;
-    if (node.style.fontWeight) styles += `  font-weight: ${node.style.fontWeight};\n`;
-    if (node.style.lineHeightPx) styles += `  line-height: ${node.style.lineHeightPx}px;\n`;
-    if (node.style.letterSpacing) styles += `  letter-spacing: ${node.style.letterSpacing}px;\n`;
-    if (node.style.textAlignHorizontal) {
-      const align = node.style.textAlignHorizontal.toLowerCase();
-      styles += `  text-align: ${align};\n`;
-    }
-    styles += "}\n\n";
+    if (node.style.fontFamily) styleInfo += `${indent}// Font: ${node.style.fontFamily}\n`;
+    if (node.style.fontSize) styleInfo += `${indent}// Font Size: ${node.style.fontSize}px\n`;
+    if (node.style.fontWeight) styleInfo += `${indent}// Font Weight: ${node.style.fontWeight}\n`;
+    if (node.style.textAlignHorizontal) styleInfo += `${indent}// Text Align: ${node.style.textAlignHorizontal}\n`;
   }
   
-  // Extract dimensions and layout
+  // Extract dimensions for AI context
   if (node.absoluteBoundingBox) {
     const box = node.absoluteBoundingBox;
-    styles += `${className ? `.${className}` : ""} {\n`;
-    styles += `  width: ${box.width}px;\n`;
-    styles += `  height: ${box.height}px;\n`;
-    styles += "}\n\n";
+    styleInfo += `${indent}// Dimensions: ${box.width}px × ${box.height}px\n`;
   }
   
-  // Extract corner radius
+  // Extract corner radius for AI context
   if (node.cornerRadius) {
-    styles += `${className ? `.${className}` : ""} {\n`;
-    styles += `  border-radius: ${node.cornerRadius}px;\n`;
-    styles += "}\n\n";
+    styleInfo += `${indent}// Border Radius: ${node.cornerRadius}px\n`;
   }
   
-  // Process children
-  if (node.children && Array.isArray(node.children)) {
-    node.children.forEach((child) => {
-      const childClass = (child.name || 'element').toLowerCase().replace(/[^a-z0-9]/g, "-");
-      styles += extractStyles(child, childClass);
-    });
-  }
-  
-  return styles;
+  return styleInfo;
 }
 
 function buildPrompt(componentName, structure, framework) {
-  return `Create a React component named ${componentName}.
-- Use ${framework} for styling.
-- Add strong TypeScript types for props and events.
-- Minimal, modern structure.
-- Follow React best practices and accessibility guidelines.
+  return `Create a pixel-perfect React component named ${componentName}.
+- Use ${framework} EXCLUSIVELY for all styling - no CSS modules, no external stylesheets
+- Match the exact dimensions, colors, fonts, and spacing from the Figma design
+- Use the framework's responsive design features appropriately
+- Add strong TypeScript types for props and events
+- Implement modern, accessible component structure
+- Follow React best practices and accessibility guidelines
+- Make it production-ready with proper error handling
 
-Here's the component structure:
+CRITICAL: All visual styling must be done using ${framework} components/utilities only.
 
-${structure}`;
+Here's the detailed component structure with visual properties:
+
+${structure}
+
+Create a component that matches this design exactly using ${framework}.`;
 }
 
 async function safeWriteFile(filePath, content) {
@@ -179,7 +293,8 @@ function cleanGeneratedCode(content) {
   return cleaned.trim();
 }
 
-async function generateWithAI(model, client, prompts, outputDir, componentName) {
+// UPDATED: generateWithAI function with image support and framework-only styling
+async function generateWithAI(model, client, prompts, outputDir, componentName, imageImports = [], framework = "") {
   const sanitizedName = sanitizeComponentName(componentName);
   const basePath = validatePath(path.join(outputDir, sanitizedName));
   
@@ -219,6 +334,13 @@ async function generateWithAI(model, client, prompts, outputDir, componentName) 
 
   const systemMsg = { role: "system", content: systemPrompts };
 
+  // Create image imports context for AI
+  const imageContext = imageImports.length > 0 
+    ? `\n\nAvailable images in assets folder:\n${imageImports.map(img => 
+        `// ${img.nodeName} -> import ${img.importName} from '${img.relativePath}';`
+      ).join('\n')}\n\nUse these images appropriately in your component JSX.`
+    : '';
+
   try {
     // Generate types
     const typesContent = await runPrompt([
@@ -246,18 +368,19 @@ Follow all custom hook generation principles from the system prompt: type-safe, 
       },
     ]);
 
-    // Generate component
+    // Generate component with image awareness
     const compContent = await runPrompt([
       systemMsg,
       {
         role: "user",
-        content: `${prompts.componentPrompt}
+        content: `${prompts.componentPrompt}${imageContext}
         
 CRITICAL: Output ONLY the raw TypeScript/React code. No markdown fences, no comments, no explanations.
 File path: components/${sanitizedName}/${sanitizedName}.tsx
 Import types from './types' and hook from './use${sanitizedName}'.
-Use CSS Modules: import styles from './${sanitizedName}.module.scss'
-Component name: ${sanitizedName}`,
+Component name: ${sanitizedName}
+Use ${prompts.framework} EXCLUSIVELY for styling - no CSS modules or external stylesheets.
+${imageImports.length > 0 ? '\nImport and use the available images in your component JSX where they make sense.' : ''}`,
       },
     ]);
 
@@ -382,75 +505,48 @@ async function run() {
       }
     }
 
-    // 6. Generate SCSS
-    console.log("🎨 Extracting styles...");
-    const scss = extractStyles(mainFrame, sanitizedName.toLowerCase());
-    const scssPath = path.join(compPath, `${sanitizedName}.module.scss`);
-    
-    await fs.promises.mkdir(compPath, { recursive: true });
-    await safeWriteFile(scssPath, scss);
+    // NEW: Extract and save images BEFORE generating other files
+    console.log("🖼️  Extracting and saving images...");
+    const imageImports = await extractAndSaveImages(
+      fileId.trim(), 
+      mainFrame, 
+      compPath, 
+      sanitizedName
+    );
 
-    // 7. Install dependencies
+    if (imageImports.length > 0) {
+      console.log(`📸 Successfully processed ${imageImports.length} images`);
+    } else {
+      console.log("ℹ️  No images found or extracted from this design");
+    }
+
+    // 6. Install dependencies
     console.log("📦 Checking dependencies...");
     await checkAndInstallDeps(frameworks);
 
-    // 8. Generate component and test files
+    // 7. Generate component files with framework-based styling
     console.log("🤖 Generating React component...");
     const styleUsed = frameworks.join(" and ");
     const prompt = buildPrompt(sanitizedName, structureText, styleUsed);
     
+    // UPDATED: Pass imageImports and framework to generateWithAI
     const filesPath = await generateWithAI(
       model,
       aiClient,
-      { componentPrompt: prompt },
+      { componentPrompt: prompt, framework: styleUsed },
       validatedTargetFolder,
-      componentName
-    );
-
-    // Generate test file separately
-    console.log("🧪 Generating test file...");
-    const testContent = await aiClient.messages ? 
-      await aiClient.messages.create({
-        model: "claude-3-5-sonnet-20241022",
-        max_tokens: 2048,
-        messages: [{
-          role: "user",
-          content: `Create a Jest + React Testing Library test file for the ${sanitizedName} component.
-          
-CRITICAL: Output ONLY the raw TypeScript test code. No markdown, no comments, no explanations.
-File path: components/${sanitizedName}/${sanitizedName}.test.tsx
-NEVER import custom theme files like '../../theme'.
-Use MUI's createTheme() if theme is needed for testing.
-Test accessibility, user interactions, and component rendering.`
-        }],
-        system: systemPrompts
-      }).then(result => result.content[0].text) :
-      await aiClient.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompts },
-          {
-            role: "user", 
-            content: `Create a Jest + React Testing Library test file for the ${sanitizedName} component.
-            
-CRITICAL: Output ONLY the raw TypeScript test code. No markdown, no comments, no explanations.
-File path: components/${sanitizedName}/${sanitizedName}.test.tsx
-NEVER import custom theme files like '../../theme'.
-Use MUI's createTheme() if theme is needed for testing.
-Test accessibility, user interactions, and component rendering.`
-          }
-        ]
-      }).then(result => result.choices[0].message.content);
-
-    await safeWriteFile(
-      path.join(filesPath, `${sanitizedName}.test.tsx`),
-      testContent
+      componentName,
+      imageImports, // Pass image imports
+      styleUsed // Pass framework info
     );
 
     console.log(`\n✨ Component generated successfully!`);
     console.log(`📁 Location: ${filesPath}`);
     console.log(`🎯 Component name: ${sanitizedName}`);
-    console.log(`💄 Styles: ${styleUsed}`);
+    console.log(`💄 Styling: ${styleUsed} (pixel-perfect)`);
+    if (imageImports.length > 0) {
+      console.log(`🖼️  Images: ${imageImports.length} images saved in assets/`);
+    }
 
   } catch (error) {
     console.error(`\n❌ Error: ${error.message}`);
